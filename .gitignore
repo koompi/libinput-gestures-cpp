@@ -30,6 +30,8 @@ moc_*.cpp
 ui_*.h
 qrc_*.cpp
 Thumbs.db
+build
+.vscode
 *.res
 *.rc
 /.qmake.cache
