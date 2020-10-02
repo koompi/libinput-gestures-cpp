@@ -56,6 +56,7 @@ float timeoutv = DEFAULT_TIMEOUT;
 
 // Rotation threshold in degrees to discriminate pinch rotate from in/out
 float ROTATE_ANGLE = 15.0;
+enum Fns { confGesture, confDevice, swipeThreshold, timeOut };
 
 // -------------- HELPER FUNCS -------------------- //
 inline void ltrim(string &s)
@@ -430,10 +431,11 @@ class COMMAND
 public:
     COMMAND() {}
 
-    COMMAND(vector<string> arr_arg)
+    COMMAND(const vector<string> &args_)
     {
-        reprstr = join(arr_arg);
+        reprstr = join(args_);
         // Expand '~' and env vars in executable command name
+        vector<string> arr_arg = args_;
         string full_progpath = string(getenv("HOME")).append("/" + arr_arg[0]); 
         replace(arr_arg.begin(), arr_arg.end(), arr_arg[0], expand_env(full_progpath));
         argslist = arr_arg;
@@ -492,8 +494,9 @@ public:
         CMDSET(
             splitStrings("wmctrl -s")) 
     {
+        add_internal_command(this);
         // Action internal swipe commandss
-        for (auto const &[key, val] : commands)
+        for (auto const& [key, val] : commands)
             commands_list.push_back(key);
 
         // Set up command line arguments
@@ -553,8 +556,8 @@ public:
             else cols = 1;
         }
         // Save the translations appropriate to this command
-        xmove = commands[cmdi][1][0];
-        ymove = commands[cmdi][1][1];
+        xmove = commands[cmdi].second[0];
+        ymove = commands[cmdi].second[1];
     }
 
     string Run(bool block = false)
@@ -663,7 +666,7 @@ public:
     }
 
 protected:
-    const map<string, vector<int>> commands;
+    const vector<pair<string, vector<int>>> commands;
     vector<string> commands_list;
     const vector<string> CMDLIST, CMDSET;
     bool nowrap;
@@ -687,23 +690,19 @@ public:
         // Add a configured motion command for this gesture
 
         if (find(SUPPORTED_MOTIONS.begin(), SUPPORTED_MOTIONS.end(), motion) == SUPPORTED_MOTIONS.end())
-        {
-            ostringstream stream;
-            stream << "Gesture " << name << " does not support motion \"" << motion << "\"." << endl
-                   << "Must be \"" << join(SUPPORTED_MOTIONS, " or ") << "\"";
-            return stream.str();
-        }
+            return string("Gesture ").append(name + " does not support motion \"" + motion + "\".\nMust be \"" + join(SUPPORTED_MOTIONS, " or ") + "\"");
 
-        if (command == "")
+        if (command.empty())
             return "No command configured";
 
         // If any extended gestures configured then set flag to enable their discrimination
         if (motion.find(extended_text))
             has_extended = true;
-
+        
+        // !!!!!!!!!!!
         string key;
-        if (fingers != "")
-            key = fingers;
+        if (fingers.length())
+            key = string(motion).append(" " + fingers);
         else
             key = motion;
 
@@ -717,11 +716,12 @@ public:
             return e.what();
         }
 
-        //            COMMAND cls = internal_commands[cmds[0]];
+        COMMAND *cls = internal_commands[cmds[0]];
 
         try
         {
-            //                motions[key] = cls(cmds);
+            // !!!!!!!!!!!
+            // motions[key] = &cls(cmds);
         }
         catch (const exception &e)
         {
@@ -743,36 +743,33 @@ public:
         // Action a motion command for this gesture
         COMMAND *command;
         if (motions.find(_fingers) != motions.end())
-            command = new COMMAND(motions[_fingers]);
+            command = motions[string(motion).append(" " + _fingers)];
         else
-            command = new COMMAND(motions[motion]);
+            command = motions[motion];
 
-        //            if(args["verbose"])
-        vector<string> res = {};
-        for (vector<float>::const_iterator p = data.begin(); p != data.end(); ++p)
-        {
-            res.push_back(to_string(*p));
+        if(args["verbose"].length()) {
+            vector<string> res = {to_string(data.first), to_string(data.second)};
+            cout << PROGNAME << ": " << name << " " << motion << " " << _fingers << " " << join(res, ", ") << endl;
+            if (command)
+                cout << "    " << command << endl;
         }
-        cout << PROGNAME << ": " << name << " " << motion << " " << _fingers << " " << join(res, "-") << endl;
-        if (command)
-            cout << command << endl;
 
         chrono::duration<double> time_span = duration_cast<chrono::duration<double>>(chrono::steady_clock::now() - starttime);
         if (timeoutv > 0 && time_span.count() < timeoutv)
         {
-            //                if(args["verbose"])
-            cout << "Timeout - no action" << endl;
-            return;
+            if(args["verbose"].length()) {
+                cout << "Timeout - no action" << endl;
+                return;
+            }
         }
 
-        if (command)
-            command->Run();
+        if (command && !args["debug"].empty()) command->Run();
     }
 
     virtual bool update(vector<string> coords) = 0;
     virtual void end() = 0;
 
-    map<string, COMMAND> Motions() const
+    map<string, COMMAND*> Motions() const
     {
         return motions;
     };
@@ -784,15 +781,15 @@ public:
 
 protected:
     string name, _fingers, extended_text;
-    map<string, COMMAND> motions;
+    map<string, COMMAND*> motions;
     bool has_extended;
     vector<string> SUPPORTED_MOTIONS;
-    vector<float> data;
+    pair<float, float> data;
     chrono::steady_clock::time_point starttime;
 };
 
 // Table of gesture handlers
-map<string, GESTURE *> handlers = {};
+map<string, GESTURE*> handlers = {};
 
 void add_gesture_handler(GESTURE *cls)
 {
@@ -804,8 +801,10 @@ class SWIPE : public GESTURE
     // Class to handle this type of gesture
 public:
     SWIPE() : GESTURE(),
-              SUPPORTED_MOTIONS({"left", "right", "up", "down", "left_up", "right_up", "left_down", "right_down"}),
-              extended_text("_") {}
+        SUPPORTED_MOTIONS({"left", "right", "up", "down", "left_up", "right_up", "left_down", "right_down"}),
+        extended_text("_") {
+            add_gesture_handler(this);
+        }
 
     bool update(vector<string> coords) override
     {
@@ -821,16 +820,16 @@ public:
             return false;
         }
 
-        GESTURE::data[0] += x;
-        GESTURE::data[1] += y;
+        data.first += x;
+        data.second += y;
         return true;
     }
 
     void end() override
     {
         // Action this gesture at the end of a motion sequence
-        x = GESTURE::data[0];
-        y = GESTURE::data[1];
+        x = data.first;
+        y = data.second;
         abx = fabs(x);
         aby = fabs(y);
 
@@ -842,19 +841,19 @@ public:
         // If significant movement in both planes the consider it a oblique swipe (but only if any are configured)
 
         string motion;
-        if (abx < aby)
+        if (abx > aby)
         {
             motion = (x < 0) ? "left" : "right";
-            if (GESTURE::has_extended && abx > 0 && aby / abx > OBLIQUE_RATIO)
+            if (has_extended && abx > 0 && aby / abx > OBLIQUE_RATIO)
                 motion += (y < 0) ? "_up" : "_down";
         }
         else
         {
             motion = (y < 0) ? "up" : "down";
-            if (GESTURE::has_extended && aby > 0 && abx / aby > OBLIQUE_RATIO)
+            if (has_extended && aby > 0 && abx / aby > OBLIQUE_RATIO)
                 motion = (x < 0) ? "left_" + motion : "right_" + motion;
         }
-        GESTURE::action(motion);
+        action(motion);
     }
 
 private:
@@ -868,8 +867,10 @@ class PINCH : public GESTURE
     // Class to handle this type of gesture'
 public:
     PINCH() : GESTURE(),
-              SUPPORTED_MOTIONS({"in", "out", "clockwise", "anticlockwise"}),
-              extended_text("clock") {}
+            SUPPORTED_MOTIONS({"in", "out", "clockwise", "anticlockwise"}),
+            extended_text("clock") {
+                add_gesture_handler(this);
+            }
 
     bool update(vector<string> coords) override
     {
@@ -885,21 +886,21 @@ public:
             return false;
         }
 
-        GESTURE::data[0] += x - 1.0;
-        GESTURE::data[1] += y;
+        data.first += x - 1.0;
+        data.second += y;
         return true;
     }
 
     void end() override
     {
         // Action this gesture at the end of a motion sequence
-        ratio = GESTURE::data[0];
-        angle = GESTURE::data[1];
+        ratio = data.first;
+        angle = data.second;
 
-        if (GESTURE::has_extended && fabs(angle) > ROTATE_ANGLE)
-            GESTURE::action((angle >= 0.0) ? "clockwise" : "anticlockwise");
+        if (has_extended && fabs(angle) > ROTATE_ANGLE)
+            action((angle >= 0.0) ? "clockwise" : "anticlockwise");
         else if (ratio != 0.0)
-            GESTURE::action((ratio <= 0.0) ? "in" : "out");
+            action((ratio <= 0.0) ? "in" : "out");
     }
 
 private:
@@ -908,22 +909,24 @@ private:
     float x, y, ratio, angle;
 };
 
-map<string, confFn> conf_commands = {};
+map<string, Fns> conf_commands = {};
 
-template <typename T, typename U>
-void add_conf_command(function<U(U)> func, string lineargs)
-{
-    // Add configuration command to command lookup table based on name
-    string key = regex_replace(typeid(func).name(), regex("^conf_"), "");
-    conf_commands.insert({key, &func(lineargs)});
-}
+// template <typename T, typename U>
+// void add_conf_command(function<U(U)> func, string lineargs)
+// {
+//     // Add configuration command to command lookup table based on name
+//     string key = regex_replace(typeid(func).name(), regex("^conf_"), "");
+//     conf_commands.insert({key, &func(lineargs)});
+// }
 
 string conf_gesture(string lineargs)
 {
+    string key = regex_replace(__func__, regex("^conf_"), "");
+    conf_commands.insert({key, Fns::confGesture});
     // Process a single gesture line in conf file
     vector<string> fields = splitStrings(lineargs, ' ', 2);
 
-    if ((int)fields.size() > 3)
+    if (fields.size() < 3)
         return "Invalid gesture line - not enough fields";
 
     string gesture = fields.at(0);
@@ -941,9 +944,7 @@ string conf_gesture(string lineargs)
             transform(formatted_motion.begin(), formatted_motion.end(), formatted_motion.begin(), ::tolower);
             arr_motion.push_back(formatted_motion);
         }
-        ostringstream stream;
-        stream << "Gesture (" << gesture << ") is not supported.\nMust be (" << join(arr_motion, " or ") << ")";
-        return stream.str();
+        return string("Gesture \"" + gesture + "\" is not supported.\nMust be \"" + join(arr_motion, " or ") + "\"");
     }
 
     // Gesture command can be configured with optional specific finger count so look for that
@@ -951,7 +952,7 @@ string conf_gesture(string lineargs)
     string fingers = cmds[0];
     string fcommand = cmds[1];
     if (is_digits(fingers) && fingers.length() == 1)
-        command = (fcommand != "") ? fcommand : "";
+        command = (fcommand.length()) ? fcommand : "";
     else
         fingers = "";
 
@@ -962,24 +963,28 @@ string conf_gesture(string lineargs)
 
 string conf_device(string lineargs)
 {
+    string key = regex_replace(__func__, regex("^conf_"), "");
+    conf_commands.insert({key, Fns::confDevice});
     // Process a single device line in conf file
     // Command line overrides configuration file
-    if (args["device"] == "")
+    if (args["device"].empty())
     {
         args["device"] = lineargs;
     }
 
-    return (args["device"] != "") ? "" : "No device specified";
+    return (args["device"].length()) ? "" : "No device specified";
 }
 
 string swipe_threshold(string lineargs)
 {
+    string key = regex_replace(__func__, regex("^conf_"), "");
+    conf_commands.insert({key, Fns::swipeThreshold});
     // Change swipe threshold
     try
     {
-        swipe_min_threshold = stoi(lineargs);
+        ::swipe_min_threshold = stoi(lineargs);
     }
-    catch (exception &e)
+    catch (const exception &e)
     {
         return "Must be integer value";
     }
@@ -988,12 +993,14 @@ string swipe_threshold(string lineargs)
 
 string timeout(string lineargs)
 {
+    string key = regex_replace(__func__, regex("^conf_"), "");
+    conf_commands.insert({key, Fns::timeOut});
     // Change gesture timeout
     try
     {
-        timeoutv = stof(lineargs);
+        ::timeoutv = stof(lineargs);
     }
-    catch (exception &e)
+    catch (const exception &e)
     {
         return "Must be float value";
     }
@@ -1003,25 +1010,31 @@ string timeout(string lineargs)
 string get_conf_line(string line)
 {
     // Process a single line in conf file'
-    vector<string> arr_line = splitStrings(line, ' ', 1);
+    vector<string> arr_line = splitStrings(line, ' ', 2);
     string key = arr_line[0];
     string argslist = arr_line[1];
-    // Old format conf files may have a ":" appended to the key
 
+    // Old format conf files may have a ":" appended to the key
     removeTrailingCharacters(key, ':');
-    confFn conf_func = conf_commands[key];
+    Fns conf_func = conf_commands[key];
 
     if (!conf_func)
     {
         vector<string> arr_conf_commands;
         for (auto const& [key, func] : conf_commands) 
             arr_conf_commands.push_back(key);
-
-        ostringstream stream;
-        stream << "Configuration command (" << key << ") is not supported.\nMust be (" << join(arr_conf_commands, " or ") << ")";
-        return stream.str();
+        return string("Configuration command \"" + key + "\" is not supported.\nMust be \""+ join(arr_conf_commands, " or ") + "\"");
     }
-    return (argslist != "") ? conf_func(argslist) : "";
+    if(argslist.length()) {
+        switch(conf_func) {
+            case Fns::confGesture : return conf_gesture(argslist);
+            case Fns::confDevice : return conf_device(argslist);
+            case Fns::swipeThreshold: return swipe_threshold(argslist);
+            case Fns::timeOut : return timeout(argslist);
+            default: return "";
+        }
+    }
+    else return "";
 }
 
 void get_conf(string conffile, string confname)
@@ -1070,19 +1083,19 @@ string unexpanduser(string cfile)
         relhome = "";
     }
     fs::path homepath("~");
-    return (relhome != "") ? homepath.append(relhome) : relslash;
+    return (relhome.length()) ? homepath.append(relhome) : relslash;
 }
 
 // Search for configuration file. Use file given as command line argument, else look for file in search dir order.
 string read_conf(string conffile, string defname)
 {
     fs::path confpath;
-    if (conffile != "")
+    if (conffile.length())
     {
         confpath = fs::path(conffile);
         if (!fs::exists(confpath))
         {
-            cerr << "Conf file (" << conffile << " does not exist." << endl;
+            cerr << "Conf file \"" << conffile << "\" does not exist." << endl;
             exit(0);
         }
     }
@@ -1114,215 +1127,220 @@ string read_conf(string conffile, string defname)
 int main(int argc, char *argv[])
 {
     QCoreApplication a(argc, argv);
-    // QCommandLineParser opt;
-    // opt.setApplicationDescription("Libinput Gesture");
-    // opt.addHelpOption();
-    // QCommandLineOption confOption(QStringList() << "c"
-    //                                             << "conffile",
-    //                               QCoreApplication::translate("main", "alternative configuration file"),
-    //                               QCoreApplication::translate("main", "Configure File"));
-    // opt.addOption(confOption);
-    // QCommandLineOption verboseOption(QStringList() << "v"
-    //                                                << "verbose",
-    //                                  QCoreApplication::translate("main", "output diagnostic messages"));
-    // opt.addOption(verboseOption);
-    // QCommandLineOption debugOption(QStringList() << "d"
-    //                                              << "debug",
-    //                                QCoreApplication::translate("main", "output diagnostic messages only, do not action gestures"));
-    // opt.addOption(debugOption);
-    // QCommandLineOption rawOption(QStringList() << "r"
-    //                                            << "raw",
-    //                              QCoreApplication::translate("main", "output raw libinput debug-event messages only, do not action gestures"));
-    // opt.addOption(rawOption);
-    // QCommandLineOption listOption(QStringList() << "l"
-    //                                             << "list",
-    //                               QCoreApplication::translate("main", "just list out environment and configuration"));
-    // opt.addOption(listOption);
-    // QCommandLineOption deviceOption("device", QCoreApplication::translate("main", "explicit device name to use (or path if starts with /)"));
-    // // hidden option to specify a file containing libinput list device output to parse
-    // QCommandLineOption deviceListOption("device-list");
-    // deviceListOption.setFlags(QCommandLineOption::HiddenFromHelp);
-    // opt.addOption(deviceListOption);
-    // opt.process(a);
+    QCommandLineParser opt;
+    opt.setApplicationDescription("Libinput Gesture");
+    opt.addHelpOption();
+    QCommandLineOption confOption(QStringList() << "c"
+                                                << "conffile",
+                                  QCoreApplication::translate("main", "alternative configuration file"),
+                                  QCoreApplication::translate("main", "Configure File"));
+    opt.addOption(confOption);
+    QCommandLineOption verboseOption(QStringList() << "v"
+                                                   << "verbose",
+                                     QCoreApplication::translate("main", "output diagnostic messages"));
+    opt.addOption(verboseOption);
+    QCommandLineOption debugOption(QStringList() << "d"
+                                                 << "debug",
+                                   QCoreApplication::translate("main", "output diagnostic messages only, do not action gestures"));
+    opt.addOption(debugOption);
+    QCommandLineOption rawOption(QStringList() << "r"
+                                               << "raw",
+                                 QCoreApplication::translate("main", "output raw libinput debug-event messages only, do not action gestures"));
+    opt.addOption(rawOption);
+    QCommandLineOption listOption(QStringList() << "l"
+                                                << "list",
+                                  QCoreApplication::translate("main", "just list out environment and configuration"));
+    opt.addOption(listOption);
+    QCommandLineOption deviceOption("--device", QCoreApplication::translate("main", "explicit device name to use (or path if starts with /)"));
+    // hidden option to specify a file containing libinput list device output to parse
+    QCommandLineOption deviceListOption("device-list");
+    deviceListOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    opt.addOption(deviceListOption);
+    opt.process(a);
+    
+    map<string, string> opt_values = {};
 
-    // if (opt.isSet(debugOption) || opt.isSet(rawOption) || opt.isSet(listOption))
-    //     args["verbose"] = true;
+    // !!!!!!!!!!!
+    // ::args = opt.values();
 
-    // // Libinput changed the way in which it's utilities are called
-    // string libvers = get_libinput_vers();
-    // if (libvers == "")
-    // {
-    //     cerr << "libinput helper tools do not seem to be installed?" << endl;
-    //     exit(0);
-    // }
+    if (opt.isSet(debugOption) || opt.isSet(rawOption) || opt.isSet(listOption))
+        args["verbose"] = true;
 
-    // string cmd_debug_events, cmd_list_devices;
-    // if (!LessThanVersion(libvers, "1.8.0"))
-    // {
-    //     cmd_debug_events = "libinput debug-events";
-    //     cmd_list_devices = "libinput list-devices";
-    // }
-    // else
-    // {
-    //     cmd_debug_events = "libinput-debug-events";
-    //     cmd_list_devices = "libinput-list-devices";
-    // }
-
-    // if (args["verbose"] != "")
-    // {
-    //     // Output various info/version info
-    //     string xsession = (getenv("XDG_SESSION_DESKTOP") != NULL) ? getenv("XDG_SESSION_DESKTOP") : (getenv("DESKTOP_SESSION") != NULL) ? getenv("DESKTOP_SESSION") : "unknown";
-    //     string xtype = (getenv("XDG_SESSION_TYPE") != NULL) ? getenv("XDG_SESSION_TYPE") : "unknown";
-    //     cout << PROGNAME << ": session " << xsession << "+" << xtype << " on " << platform() << ", libinput " << libvers << endl;
-
-    //     // Output hash version/checksum of this program
-    //     string vers = run({"md5sum", PROGPATH}, false);
-    //     vers = (vers != "") ? splitStrings(vers, ' ')[0] : "?";
-    //     cout << PROGPATH << ": hash " << vers << endl;
-    // }
-
-    // // Read and process the conf file
-    // string confname = read_conf(opt.value(confOption).toStdString(), CONFNAME);
-
-    // // List out available gestures if that is asked for
-    // if (args["verbose"] != "")
-    // {
-    //     if (!opt.isSet(rawOption))
-    //     {
-    //         cout << "Gestures configured in " << confname << ":" << endl;
-    //         for (auto const &handler : handlers)
-    //         {
-    //             for (auto const &motion : handler.second->Motions())
-    //             {
-    //                 string _motion, fingers;
-    //                 if (typeid(motion.first) == typeid(string))
-    //                 {
-    //                     _motion = motion.first;
-    //                     fingers = "";
-    //                 }
-    //                 else
-    //                 {
-    //                     _motion = motion.first;
-    //                 }
-    //                 cout << handler.second->Name() << " " << _motion << " " << fingers << " " << motion.second << endl;
-    //             }
-    //         }
-
-    //         if (swipe_min_threshold)
-    //             cout << "swipe_threshold " << swipe_min_threshold << endl;
-    //         if (timeoutv != DEFAULT_TIMEOUT)
-    //             cout << "timeout " << timeoutv << endl;
-    //     }
-
-    //     if (opt.isSet(deviceOption))
-    //         cout << "device " << opt.value(deviceOption).toStdString() << endl;
-    // }
-
-    // // Get touchpad device
-    // map<string, string> device = {};
-    // if (!opt.isSet(deviceOption) || opt.value(deviceOption).toLower().toStdString() != "all")
-    // {
-    //     device = get_device(opt.value(deviceOption).toStdString(), cmd_list_devices, opt.value(deviceListOption).toStdString());
-
-    //     if (device.empty())
-    //     {
-    //         cerr << "Could not determine touchpad device." << endl;
-    //         exit(0);
-    //     }
-    // }
-    // if (args["verbose"] != "")
-    // {
-    //     if (!device.empty())
-    //         cout << PROGNAME << ": device " << device["_diag"] << endl;
-    //     else
-    //         cout << PROGNAME << ": monitoring all devices" << endl;
-    // }
-
-    // // If just called to list out above environment info then exit now
-    // if (opt.isSet(listOption))
-    //     exit(0);
-
-    // // Make sure only one instance running for current user
-    // string user = getlogin();
-    // FILE *proglock = open_lock({PROGNAME, user});
-    // if (proglock == nullptr)
-    // {
-    //     cerr << PROGNAME << " is already running for " << user << ", terminating .." << endl;
-    //     exit(0);
-    // }
-
-    // // Set up square of swipe threshold
-    // ::abzsquare = pow(swipe_min_threshold, 2);
-
-    // // Note your must "sudo gpasswd -a $USER input" then log out/in for permission to access the device.
-    // string devstr = (!device.empty()) ? string(" --device ").append(device["_path"]) : "";
-    // string command = string("stdbuf -oL -- ").append(cmd_debug_events).append(devstr);
-
-    // // Sit in a loop forever reading the libinput messages ..
-    // GESTURE *handler;
-    // //    cmd.stdout
-    // for (string line : splitStrings(command))
-    // {
-    //     // Just output raw messages if in that mode
-    //     if (opt.isSet(rawOption))
-    //     {
-    //         trim(line);
-    //         cout << line << endl;
-    //         continue;
-    //     }
-
-    //     // Only interested in gestures
-    //     if (line.find("GESTURE_") == string::npos)
-    //         continue;
-
-    //     // Split received message line into relevant fields
-    //     vector<string> arr_cmd = splitStrings(line, ' ', 3);
-    //     string dev = arr_cmd[0], gevent = arr_cmd[1], time = arr_cmd[2], other = arr_cmd[3];
-    //     vector<string> arr_gevent = splitStrings(gevent.substr(8), '_');
-    //     string gesture = arr_gevent[0], event = arr_gevent[1];
-    //     vector<string> arr_other = splitStrings(other, ' ', 1);
-    //     string fingers = arr_other[0], argslist = arr_other[1], params = (argslist != "") ? splitStrings(argslist)[0] : "";
-
-    //     // Action each type of event
-    //     if (event == "UPDATE")
-    //     {
-    //         if (handler)
-    //         {
-    //             // Split parameters into list of clean numbers
-    //             if (!handler->update(resplit(params, "[^-.\d]+")))
-    //                 cerr << "Could not parse " << gesture << " " << event << ": " << params << endl;
-    //         }
-    //     }
-    //     else if (event == "BEGIN")
-    //     {
-    //         handler = handlers[gesture];
-    //         if (handler)
-    //             handler->begin(fingers);
-    //         else
-    //             cerr << "Unknown gesture received: " << gesture << "." << endl;
-    //     }
-    //     else if (event == "END")
-    //     {
-    //         // Ignore gesture if final action is cancelled
-    //         if (handler)
-    //         {
-    //             if (params != "cancelled")
-    //                 handler->end();
-    //             handler = nullptr;
-    //         }
-    //     }
-    //     else
-    //         cerr << "Unknown gesture + event received: " << gesture << " + " << event << "." << endl;
-    // }
-    // cout << run("stdbuf -oL -- libinput debug-events --device /dev/input/event17") << endl;
-
-    vector<map<string, string>> device_list = get_devices_list("libinput list-devices", "");
-    for(map<string, string> device : device_list) {
-        for(auto const &[key, value] : device) {
-            cout << key << " : " << value << endl; 
-        }
-        cout << "=====================================" << endl;
+    // Libinput changed the way in which it's utilities are called
+    string libvers = get_libinput_vers();
+    if (libvers.empty())
+    {
+        cerr << "libinput helper tools do not seem to be installed?" << endl;
+        exit(0);
     }
+
+    string cmd_debug_events, cmd_list_devices;
+    if (!LessThanVersion(libvers, "1.8.0"))
+    {
+        cmd_debug_events = "libinput debug-events";
+        cmd_list_devices = "libinput list-devices";
+    }
+    else
+    {
+        cmd_debug_events = "libinput-debug-events";
+        cmd_list_devices = "libinput-list-devices";
+    }
+
+    if (args["verbose"].length())
+    {
+        // Output various info/version info
+        string xsession = (getenv("XDG_SESSION_DESKTOP") != NULL) ? getenv("XDG_SESSION_DESKTOP") : (getenv("DESKTOP_SESSION") != NULL) ? getenv("DESKTOP_SESSION") : "unknown";
+        string xtype = (getenv("XDG_SESSION_TYPE") != NULL) ? getenv("XDG_SESSION_TYPE") : "unknown";
+        cout << PROGNAME << ": session " << xsession << "+" << xtype << " on " << platform() << ", libinput " << libvers << endl;
+
+        // Output hash version/checksum of this program
+        string vers = run({"md5sum", PROGPATH}, false);
+        vers = (vers != "") ? splitStrings(vers, ' ')[0] : "?";
+        cout << PROGPATH << ": hash " << vers << endl;
+    }
+
+    // Read and process the conf file
+    string confname = read_conf(opt.value(confOption).toStdString(), CONFNAME);
+
+    // List out available gestures if that is asked for
+    if (args["verbose"].length())
+    {
+        if (!opt.isSet(rawOption))
+        {
+            cout << "Gestures configured in " << confname << ":" << endl;
+            for (auto const &handler : handlers)
+            {
+                for (auto const &motion : handler.second->Motions())
+                {
+                    string _motion, fingers;
+                    if (typeid(motion.first) == typeid(string))
+                    {
+                        _motion = motion.first;
+                        fingers = "";
+                    }
+                    else
+                    {
+                        _motion = motion.first;
+                    }
+                    cout << handler.second->Name() << " " << _motion << " " << fingers << " " << motion.second << endl;
+                }
+            }
+
+            if (swipe_min_threshold)
+                cout << "swipe_threshold " << swipe_min_threshold << endl;
+            if (timeoutv != DEFAULT_TIMEOUT)
+                cout << "timeout " << timeoutv << endl;
+        }
+
+        if (opt.isSet(deviceOption))
+            cout << "device " << opt.value(deviceOption).toStdString() << endl;
+    }
+
+    // Get touchpad device
+    map<string, string> device = {};
+    if (!opt.isSet(deviceOption) || opt.value(deviceOption).toLower().toStdString() != "all")
+    {
+        device = get_device(opt.value(deviceOption).toStdString(), cmd_list_devices, opt.value(deviceListOption).toStdString());
+
+        if (device.empty())
+        {
+            cerr << "Could not determine touchpad device." << endl;
+            exit(0);
+        }
+    }
+    if (args["verbose"].length())
+    {
+        if (!device.empty())
+            cout << PROGNAME << ": device " << device["_diag"] << endl;
+        else
+            cout << PROGNAME << ": monitoring all devices" << endl;
+    }
+
+    // If just called to list out above environment info then exit now
+    if (opt.isSet(listOption))
+        exit(0);
+
+    // Make sure only one instance running for current user
+    string user = getlogin();
+    FILE *proglock = open_lock({PROGNAME, user});
+    if (proglock == nullptr)
+    {
+        cerr << PROGNAME << " is already running for " << user << ", terminating .." << endl;
+        exit(0);
+    }
+
+    // Set up square of swipe threshold
+    ::abzsquare = pow(swipe_min_threshold, 2);
+
+    // Note your must "sudo gpasswd -a $USER input" then log out/in for permission to access the device.
+    string devstr = (!device.empty()) ? string(" --device ").append(device["_path"]) : "";
+    string command = string("stdbuf -oL -- ").append(cmd_debug_events).append(devstr);
+
+    // !!!!!!!!
+    // Sit in a loop forever reading the libinput messages ..
+    GESTURE *handler;
+    //    cmd.stdout
+    for (string line : splitStrings(command))
+    {
+        // Just output raw messages if in that mode
+        if (opt.isSet(rawOption))
+        {
+            trim(line);
+            cout << line << endl;
+            continue;
+        }
+
+        // Only interested in gestures
+        if (line.find("GESTURE_") == string::npos)
+            continue;
+
+        // Split received message line into relevant fields
+        vector<string> arr_cmd = splitStrings(line, ' ', 3);
+        string dev = arr_cmd[0], gevent = arr_cmd[1], time = arr_cmd[2], other = arr_cmd[3];
+        vector<string> arr_gevent = splitStrings(gevent.substr(8), '_');
+        string gesture = arr_gevent[0], event = arr_gevent[1];
+        vector<string> arr_other = splitStrings(other, ' ', 1);
+        string fingers = arr_other[0], argslist = arr_other[1], params = (argslist != "") ? splitStrings(argslist)[0] : "";
+
+        // Action each type of event
+        if (event == "UPDATE")
+        {
+            if (handler)
+            {
+                // Split parameters into list of clean numbers
+                if (!handler->update(resplit(params, "[^-.\d]+")))
+                    cerr << "Could not parse " << gesture << " " << event << ": " << params << endl;
+            }
+        }
+        else if (event == "BEGIN")
+        {
+            handler = handlers[gesture];
+            if (handler)
+                handler->begin(fingers);
+            else
+                cerr << "Unknown gesture received: " << gesture << "." << endl;
+        }
+        else if (event == "END")
+        {
+            // Ignore gesture if final action is cancelled
+            if (handler)
+            {
+                if (params != "cancelled")
+                    handler->end();
+                handler = nullptr;
+            }
+        }
+        else
+            cerr << "Unknown gesture + event received: " << gesture << " + " << event << "." << endl;
+    }
+
+    // vector<map<string, string>> device_list = get_devices_list("libinput list-devices", "");
+    // for(map<string, string> device : device_list) {
+    //     for(auto const &[key, value] : device) {
+    //         cout << key << " : " << value << endl; 
+    //     }
+    //     cout << "=====================================" << endl;
+    // }
 
     return a.exec();
 }
