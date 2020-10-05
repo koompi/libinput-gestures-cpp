@@ -957,7 +957,7 @@ string conf_gesture(string lineargs)
     }
 
     // Gesture command can be configured with optional specific finger count so look for that
-    vector<string> cmds = splitStrings(command, ' ', 2);
+    vector<string> cmds = splitStrings(command, ' ');
     string fingers = cmds[0];
     string fcommand = cmds[1];
     if (is_digits(fingers) && fingers.length() == 1)
@@ -1019,7 +1019,7 @@ string timeout(string lineargs)
 string get_conf_line(string line)
 {
     // Process a single line in conf file'
-    vector<string> arr_line = splitStrings(line, ' ', 2);
+    vector<string> arr_line = splitStrings(line, ' ', 1);
     string key = arr_line[0];
     string argslist = arr_line[1];
 
@@ -1030,15 +1030,16 @@ string get_conf_line(string line)
     if (!conf_func)
     {
         vector<string> arr_conf_commands;
-        for (auto const& [key, func] : conf_commands) 
-            arr_conf_commands.push_back(key);
+        for (auto const& [k, func] : conf_commands) 
+            arr_conf_commands.push_back(k);
+
         return string("Configuration command \"" + key + "\" is not supported.\nMust be \""+ join(arr_conf_commands, " or ") + "\"");
     }
     if(argslist.length()) {
         switch(conf_func) {
             case Fns::confGesture : return conf_gesture(argslist);
             case Fns::confDevice : return conf_device(argslist);
-            case Fns::swipeThreshold: return swipe_threshold(argslist);
+            case Fns::swipeThreshold : return swipe_threshold(argslist);
             case Fns::timeOut : return timeout(argslist);
             default: return "";
         }
@@ -1046,7 +1047,7 @@ string get_conf_line(string line)
     else return "";
 }
 
-void get_conf(string conffile, string confname)
+void get_conf(fs::path conffile, string confname)
 {
     // Read given configuration file and store internal actions etc
     ifstream fp;
@@ -1059,11 +1060,11 @@ void get_conf(string conffile, string confname)
         {
             trim(line);
             num++;
-            if (line == "" || line[0] == '#')
+            if (line.empty() || line[0] == '#')
                 continue;
 
             string errmsg = get_conf_line(line);
-            if (errmsg != "")
+            if (errmsg.length())
             {
                 cerr << "Error at line " << num << " in file " << confname << ":\n>> " << line << " <<\n"
                      << errmsg << "." << endl;
@@ -1137,12 +1138,12 @@ int main(int argc, char *argv[])
 {
     QCoreApplication a(argc, argv);
     QCommandLineParser opt;
-    opt.setApplicationDescription("Libinput Gesture");
+    opt.setApplicationDescription("\nRead gestures from libinput touchpad and action shell commands.");
     opt.addHelpOption();
     QCommandLineOption confOption(QStringList() << "c"
                                                 << "conffile",
                                   QCoreApplication::translate("main", "alternative configuration file"),
-                                  QCoreApplication::translate("main", "Configure File"));
+                                  QCoreApplication::translate("main", "CONFFILE"));
     opt.addOption(confOption);
     QCommandLineOption verboseOption(QStringList() << "v"
                                                    << "verbose",
@@ -1160,7 +1161,8 @@ int main(int argc, char *argv[])
                                                 << "list",
                                   QCoreApplication::translate("main", "just list out environment and configuration"));
     opt.addOption(listOption);
-    QCommandLineOption deviceOption("--device", QCoreApplication::translate("main", "explicit device name to use (or path if starts with /)"));
+    QCommandLineOption deviceOption("device", QCoreApplication::translate("main", "explicit device name to use (or path if starts with /)"), QCoreApplication::translate("main", "DEVICE"));
+    opt.addOption(deviceOption);
     // hidden option to specify a file containing libinput list device output to parse
     QCommandLineOption deviceListOption("device-list");
     deviceListOption.setFlags(QCommandLineOption::HiddenFromHelp);
@@ -1176,7 +1178,7 @@ int main(int argc, char *argv[])
     ::args.insert({"device-list", opt.value(deviceListOption).toStdString()});
 
     if (opt.isSet(debugOption) || opt.isSet(rawOption) || opt.isSet(listOption))
-        ::args["verbose"] = true;
+        ::args["verbose"] = "true";
 
     // Libinput changed the way in which it's utilities are called
     string libvers = get_libinput_vers();
