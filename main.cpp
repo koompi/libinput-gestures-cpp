@@ -441,6 +441,16 @@ public:
         argslist = arr_arg;
     }
 
+    COMMAND* set(const vector<string> &args_) {
+        reprstr = join(args_);
+        // Expand '~' and env vars in executable command name
+        vector<string> arr_arg = args_;
+        string full_progpath = string(getenv("HOME")).append("/" + arr_arg[0]); 
+        replace(arr_arg.begin(), arr_arg.end(), arr_arg[0], expand_env(full_progpath));
+        argslist = arr_arg;
+        return this;
+    }
+
     void Run()
     {
         // Run this command + arguments
@@ -702,7 +712,7 @@ public:
         // !!!!!!!!!!!
         string key;
         if (fingers.length())
-            key = string(motion).append(" " + fingers);
+            key = string(motion + " " + fingers);
         else
             key = motion;
 
@@ -720,8 +730,7 @@ public:
 
         try
         {
-            // !!!!!!!!!!!
-            // motions[key] = &cls(cmds);
+            motions[key] = cls->set(cmds);
         }
         catch (const exception &e)
         {
@@ -747,7 +756,7 @@ public:
         else
             command = motions[motion];
 
-        if(args["verbose"].length()) {
+        if(::args["verbose"].length()) {
             vector<string> res = {to_string(data.first), to_string(data.second)};
             cout << PROGNAME << ": " << name << " " << motion << " " << _fingers << " " << join(res, ", ") << endl;
             if (command)
@@ -755,15 +764,15 @@ public:
         }
 
         chrono::duration<double> time_span = duration_cast<chrono::duration<double>>(chrono::steady_clock::now() - starttime);
-        if (timeoutv > 0 && time_span.count() < timeoutv)
+        if (::timeoutv > 0 && time_span.count() < ::timeoutv)
         {
-            if(args["verbose"].length()) {
+            if(::args["verbose"].length()) {
                 cout << "Timeout - no action" << endl;
                 return;
             }
         }
 
-        if (command && !args["debug"].empty()) command->Run();
+        if (command && !::args["debug"].empty()) command->Run();
     }
 
     virtual bool update(vector<string> coords) = 0;
@@ -834,7 +843,7 @@ public:
         aby = fabs(y);
 
         // Require absolute distance movement beyond a small thresh-hold.
-        if (pow(abx, 2) + pow(aby, 2) < abzsquare)
+        if (pow(abx, 2) + pow(aby, 2) < ::abzsquare)
             return;
 
         // Discriminate left/right or up/down.
@@ -897,7 +906,7 @@ public:
         ratio = data.first;
         angle = data.second;
 
-        if (has_extended && fabs(angle) > ROTATE_ANGLE)
+        if (has_extended && fabs(angle) > ::ROTATE_ANGLE)
             action((angle >= 0.0) ? "clockwise" : "anticlockwise");
         else if (ratio != 0.0)
             action((ratio <= 0.0) ? "in" : "out");
@@ -967,12 +976,12 @@ string conf_device(string lineargs)
     conf_commands.insert({key, Fns::confDevice});
     // Process a single device line in conf file
     // Command line overrides configuration file
-    if (args["device"].empty())
+    if (::args["device"].empty())
     {
-        args["device"] = lineargs;
+        ::args["device"] = lineargs;
     }
 
-    return (args["device"].length()) ? "" : "No device specified";
+    return (::args["device"].length()) ? "" : "No device specified";
 }
 
 string swipe_threshold(string lineargs)
@@ -988,7 +997,7 @@ string swipe_threshold(string lineargs)
     {
         return "Must be integer value";
     }
-    return (swipe_min_threshold >= 0) ? "" : "Must be >= 0";
+    return (::swipe_min_threshold >= 0) ? "" : "Must be >= 0";
 }
 
 string timeout(string lineargs)
@@ -1004,7 +1013,7 @@ string timeout(string lineargs)
     {
         return "Must be float value";
     }
-    return (timeoutv >= 0) ? "" : "Must be >= 0";
+    return (::timeoutv >= 0) ? "" : "Must be >= 0";
 }
 
 string get_conf_line(string line)
@@ -1101,7 +1110,7 @@ string read_conf(string conffile, string defname)
     }
     else
     {
-        for (string confdir : CONFDIRS)
+        for (string confdir : ::CONFDIRS)
         {
             confpath = fs::path(confdir).append(defname);
             if (fs::exists(confpath))
@@ -1109,7 +1118,7 @@ string read_conf(string conffile, string defname)
             else
             {
                 vector<string> arr_path;
-                for (string c : CONFDIRS)
+                for (string c : ::CONFDIRS)
                     arr_path.push_back(unexpanduser(fs::path(c)));
                 cerr << "No file " << defname << " in " << join(arr_path, " or ") << "." << endl;
                 exit(0);
@@ -1158,13 +1167,16 @@ int main(int argc, char *argv[])
     opt.addOption(deviceListOption);
     opt.process(a);
     
-    map<string, string> opt_values = {};
-
-    // !!!!!!!!!!!
-    // ::args = opt.values();
+    ::args.insert({"conffile", opt.value(confOption).toStdString()});
+    ::args.insert({"verbose", opt.value(verboseOption).toStdString()});
+    ::args.insert({"debug", opt.value(debugOption).toStdString()});
+    ::args.insert({"raw", opt.value(rawOption).toStdString()});
+    ::args.insert({"list", opt.value(listOption).toStdString()});
+    ::args.insert({"device", opt.value(deviceOption).toStdString()});
+    ::args.insert({"device-list", opt.value(deviceListOption).toStdString()});
 
     if (opt.isSet(debugOption) || opt.isSet(rawOption) || opt.isSet(listOption))
-        args["verbose"] = true;
+        ::args["verbose"] = true;
 
     // Libinput changed the way in which it's utilities are called
     string libvers = get_libinput_vers();
@@ -1186,7 +1198,7 @@ int main(int argc, char *argv[])
         cmd_list_devices = "libinput-list-devices";
     }
 
-    if (args["verbose"].length())
+    if (::args["verbose"].length())
     {
         // Output various info/version info
         string xsession = (getenv("XDG_SESSION_DESKTOP") != NULL) ? getenv("XDG_SESSION_DESKTOP") : (getenv("DESKTOP_SESSION") != NULL) ? getenv("DESKTOP_SESSION") : "unknown";
@@ -1203,7 +1215,7 @@ int main(int argc, char *argv[])
     string confname = read_conf(opt.value(confOption).toStdString(), CONFNAME);
 
     // List out available gestures if that is asked for
-    if (args["verbose"].length())
+    if (::args["verbose"].length())
     {
         if (!opt.isSet(rawOption))
         {
@@ -1226,10 +1238,10 @@ int main(int argc, char *argv[])
                 }
             }
 
-            if (swipe_min_threshold)
-                cout << "swipe_threshold " << swipe_min_threshold << endl;
-            if (timeoutv != DEFAULT_TIMEOUT)
-                cout << "timeout " << timeoutv << endl;
+            if (::swipe_min_threshold)
+                cout << "swipe_threshold " << ::swipe_min_threshold << endl;
+            if (::timeoutv != ::DEFAULT_TIMEOUT)
+                cout << "timeout " << ::timeoutv << endl;
         }
 
         if (opt.isSet(deviceOption))
@@ -1248,7 +1260,7 @@ int main(int argc, char *argv[])
             exit(0);
         }
     }
-    if (args["verbose"].length())
+    if (::args["verbose"].length())
     {
         if (!device.empty())
             cout << PROGNAME << ": device " << device["_diag"] << endl;
@@ -1273,15 +1285,23 @@ int main(int argc, char *argv[])
     ::abzsquare = pow(swipe_min_threshold, 2);
 
     // Note your must "sudo gpasswd -a $USER input" then log out/in for permission to access the device.
-    string devstr = (!device.empty()) ? string(" --device ").append(device["_path"]) : "";
+    string devstr = (!device.empty()) ? string(" --device " + device["_path"]) : "";
     string command = string("stdbuf -oL -- ").append(cmd_debug_events).append(devstr);
 
-    // !!!!!!!!
+    FILE *fp;
+    int status;
+    char path[_POSIX2_LINE_MAX];
+    fp = popen(command.c_str(), "r");
+    if(fp == NULL) {
+        cerr << "stdbuf is not supported." << endl;
+        exit(0);
+    }
+
     // Sit in a loop forever reading the libinput messages ..
     GESTURE *handler;
-    //    cmd.stdout
-    for (string line : splitStrings(command))
+    while (fgets(path, _POSIX2_LINE_MAX, fp) != NULL)
     {
+        string line = path;
         // Just output raw messages if in that mode
         if (opt.isSet(rawOption))
         {
@@ -1333,6 +1353,7 @@ int main(int argc, char *argv[])
         else
             cerr << "Unknown gesture + event received: " << gesture << " + " << event << "." << endl;
     }
+    pclose(fp);
 
     // vector<map<string, string>> device_list = get_devices_list("libinput list-devices", "");
     // for(map<string, string> device : device_list) {
